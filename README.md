@@ -227,23 +227,22 @@ muse exec --provider echo "Hello Muse"
 ## 🔧 Architecture & Implementation
 
 ```mermaid
-flowchart TD
-    CLI["User runs 'muse [args]'"] --> SCRIPT["muse.sh (Smart Launcher)"]
+graph TD
+    CLI["User runs muse command"] --> SCRIPT["muse.sh Launcher"]
     
-    SCRIPT --> CHECK_HELPER{"Subcommand is<br>'session' or 'mcp'?"}
-    CHECK_HELPER -- Yes --> HELPER["Run muse-session / muse-mcp (Python)"]
+    SCRIPT --> CHECK_HELPER{"Subcommand is session or mcp?"}
+    CHECK_HELPER -->|Yes| HELPER["Run muse-session or muse-mcp"]
+    CHECK_HELPER -->|No| CHECK_ENV{"Platform Check"}
     
-    CHECK_HELPER -- No --> CHECK_ENV{"Environment Check"}
+    CHECK_ENV -->|Termux or Android| TERMUX{"Traced by proot?"}
+    TERMUX -->|No| PROOT["Launch proot with VFS and syscall translation"]
+    PROOT --> REAL_BIN["Execute upstream Musl binary"]
+    TERMUX -->|Yes| REAL_BIN
     
-    CHECK_ENV -- Android / Termux --> TERMUX{"Already traced by proot?"}
-    TERMUX -- No --> PROOT["Launch proot with VFS & Syscall Interception"]
-    PROOT --> REAL_BIN["Execute Upstream Musl Binary (/usr/lib/muse/muse)"]
-    TERMUX -- Yes --> REAL_BIN
-    
-    CHECK_ENV -- Linux x86_64 --> AVX2{"CPU supports AVX2?"}
-    AVX2 -- No --> QEMU["qemu-x86_64 -cpu max"]
+    CHECK_ENV -->|Linux x86_64| AVX2{"CPU supports AVX2?"}
+    AVX2 -->|No| QEMU["qemu-x86_64 -cpu max"]
     QEMU --> REAL_BIN
-    AVX2 -- Yes --> REAL_BIN
+    AVX2 -->|Yes| REAL_BIN
 ```
 
 | Component | Path | Description |
