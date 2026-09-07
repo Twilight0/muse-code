@@ -1,0 +1,869 @@
+#!/usr/bin/env python3
+"""
+muse-session: CLI & Interactive TUI extension for Muse Code to list, inspect, rename, and delete sessions.
+Integrated with the muse wrapper (/usr/bin/muse session ...).
+"""
+
+import os
+import sys
+import glob
+import json
+import shutil
+import argparse
+import re
+import curses
+from datetime import datetime, timedelta
+
+# ANSI color helpers for non-curses output
+USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+def color(text, code):
+    return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
+
+def bold(text): return color(text, "1")
+def cyan(text): return color(text, "36")
+def green(text): return color(text, "32")
+def red(text): return color(text, "31")
+def yellow(text): return color(text, "33")
+def dim(text): return color(text, "90")
+
+def get_sessions_dir():
+    xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(xdg_data, "muse", "sessions")
+
+def is_pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+def check_lock(session_dir):
+    lock_file = os.path.join(session_dir, ".session.lock")
+    if not os.path.exists(lock_file):
+        return False, None
+    try:
+        with open(lock_file, "r") as f:
+            m = re.search(r"pid=(\d+)", f.read())
+            if m:
+                pid = int(m.group(1))
+                if is_pid_alive(pid):
+                    return True, pid
+    except Exception:
+        pass
+    return False, None
+
+def get_session_info(session_dir):
+    uuid = os.path.basename(session_dir)
+    jsonl_path = os.path.join(session_dir, "session.jsonl")
+    workspace = "unknown"
+    first_prompt = None
+    created_at = None
+    model_id = None
+    is_locked, lock_pid = check_lock(session_dir)
+    events_count = 0
+    custom_title = None
+
+    # Check for custom title file
+    title_path = os.path.join(session_dir, ".session.title")
+    if os.path.exists(title_path):
+        try:
+            with open(title_path, "r", encoding="utf-8", errors="ignore") as f:
+                t = f.read().strip()
+                if t:
+                    custom_title = t
+        except Exception:
+            pass
+
+    if os.path.exists(jsonl_path):
+        mtime = os.path.getmtime(jsonl_path)
+        created_at = datetime.fromtimestamp(mtime)
+        try:
+            with open(jsonl_path, "r", errors="ignore") as f:
+                for line in f:
+                    events_count += 1
+                    try:
+                        rec = json.loads(line)
+                        pt = rec.get("payload_type")
+                        if pt == "runtime.session.metadata":
+                            meta = rec.get("payload", {}).get("record", {})
+                            if "workspace_root" in meta:
+                                workspace = meta["workspace_root"]
+                        elif pt == "run.model.configured":
+                            model_id = rec.get("payload", {}).get("record", {}).get("model_id")
+                        elif pt == "runtime.user_intent.accepted" and not first_prompt:
+                            msgs = rec.get("payload", {}).get("model_messages", [])
+                            if msgs and "content" in msgs[0]:
+                                for c in msgs[0]["content"]:
+                                    if c.get("kind") == "text":
+                                        first_prompt = c.get("text").strip()
+                                        break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    if not created_at:
+        try:
+            created_at = datetime.fromtimestamp(os.path.getctime(session_dir))
+        except Exception:
+            created_at = datetime.now()
+
+    total_bytes = 0
+    try:
+        for root, _, files in os.walk(session_dir):
+            for file in files:
+                fp = os.path.join(root, file)
+                if not os.path.islink(fp):
+                    total_bytes += os.path.getsize(fp)
+    except Exception:
+        pass
+
+    return {
+        "uuid": uuid,
+        "path": session_dir,
+        "workspace": workspace,
+        "prompt": first_prompt or "(no prompt)",
+        "custom_title": custom_title,
+        "created_at": created_at,
+        "size_bytes": total_bytes,
+        "is_locked": is_locked,
+        "lock_pid": lock_pid,
+        "events_count": events_count,
+        "model_id": model_id or "default"
+    }
+
+def find_all_sessions():
+    base = get_sessions_dir()
+    if not os.path.exists(base):
+        return []
+    pattern = os.path.join(base, "*", "*", "*", "*")
+    session_dirs = []
+    for p in glob.glob(pattern):
+        if os.path.isdir(p) and not os.path.basename(p).startswith("."):
+            session_dirs.append(p)
+    return [get_session_info(d) for d in session_dirs]
+
+def format_size(bytes_val):
+    if bytes_val < 1024:
+        return f"{bytes_val} B"
+    elif bytes_val < 1024 * 1024:
+        return f"{bytes_val / 1024:.1f} KB"
+    else:
+        return f"{bytes_val / (1024 * 1024):.1f} MB"
+
+def cmd_list(args):
+    sessions = find_all_sessions()
+    sessions.sort(key=lambda s: s["created_at"], reverse=True)
+
+    if args.workspace:
+        ws_target = os.path.abspath(args.workspace)
+        sessions = [s for s in sessions if os.path.abspath(s["workspace"]) == ws_target]
+    elif args.cwd:
+        cwd = os.path.abspath(os.getcwd())
+        sessions = [s for s in sessions if os.path.abspath(s["workspace"]) == cwd]
+
+    if args.last:
+        sessions = sessions[:1]
+
+    if not sessions:
+        if not args.quiet:
+            print("No sessions found.")
+        return
+
+    if args.quiet:
+        for s in sessions:
+            print(s["uuid"])
+        return
+
+    total_size = sum(s["size_bytes"] for s in sessions)
+
+    print(f"{bold('DATE & TIME'):<26} {bold('SESSION UUID'):<47} {bold('SIZE'):<18} {bold('WORKSPACE / TITLE / PROMPT')}")
+    print(dim("-" * 96))
+    for s in sessions:
+        dt_str = dim(s["created_at"].strftime("%Y-%m-%d %H:%M"))
+        uuid_str = cyan(s["uuid"])
+        if s["is_locked"]:
+            uuid_str += yellow(f" [LOCKED:PID {s['lock_pid']}]")
+        size_str = green(format_size(s["size_bytes"]))
+        ws_str = bold(s["workspace"])
+
+        title_display = ""
+        if s["custom_title"]:
+            title_display = yellow(f"🏷️  [{s['custom_title']}] ")
+
+        prompt_trunc = (s["prompt"][:55] + "...") if len(s["prompt"]) > 55 else s["prompt"]
+        prompt_display = dim("└─▶ ") + title_display + f'"{prompt_trunc}"'
+
+        print(f"{dt_str:<26} {uuid_str:<47} {size_str:<18} {ws_str}")
+        print(f"{'':<17} {'':<38} {'':<9} {prompt_display}")
+
+    print(dim("-" * 96))
+    print(f"Total: {bold(str(len(sessions)))} session(s) using {bold(format_size(total_size))} on disk.")
+
+def cmd_info(args):
+    sessions = find_all_sessions()
+    target = args.session_id.lower()
+    matches = [s for s in sessions if s["uuid"].lower().startswith(target)]
+
+    if not matches:
+        print(red(f"Error: No session matching '{args.session_id}' found."), file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(yellow(f"Error: Ambiguous session ID '{args.session_id}'. Matches:"), file=sys.stderr)
+        for m in matches:
+            print(f"  {m['uuid']}", file=sys.stderr)
+        sys.exit(1)
+
+    s = matches[0]
+    print(f"{bold('Session UUID:')}    {cyan(s['uuid'])}")
+    if s["custom_title"]:
+        print(f"{bold('Custom Title:')}    {yellow(s['custom_title'])}")
+    print(f"{bold('Created/Active:')}  {s['created_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{bold('Workspace:')}       {s['workspace']}")
+    print(f"{bold('Model ID:')}        {s['model_id']}")
+    print(f"{bold('Total Events:')}    {s['events_count']}")
+    print(f"{bold('Disk Size:')}       {green(format_size(s['size_bytes']))}")
+    status = red(f"YES (PID {s['lock_pid']})") if s['is_locked'] else green("No (inactive)")
+    print(f"{bold('Active Lock:')}     {status}")
+    print(f"{bold('Path on disk:')}    {dim(s['path'])}")
+    print(f"{bold('Initial Prompt:')}  {s['prompt']}")
+
+def cmd_rename(args):
+    sessions = find_all_sessions()
+    target = args.session_id.lower()
+    matches = [s for s in sessions if s["uuid"].lower().startswith(target)]
+
+    if not matches:
+        print(red(f"Error: No session matching '{args.session_id}' found."), file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(red(f"Error: Ambiguous session ID '{args.session_id}'. Multiple matches found:"), file=sys.stderr)
+        for m in matches:
+            print(f"  {m['uuid']}", file=sys.stderr)
+        sys.exit(1)
+
+    s = matches[0]
+    title_path = os.path.join(s["path"], ".session.title")
+    new_title = args.new_title.strip()
+
+    if not new_title:
+        if os.path.exists(title_path):
+            os.remove(title_path)
+            print(green(f"Cleared custom title for session {cyan(s['uuid'])}."))
+        else:
+            print("No changes made.")
+        return
+
+    with open(title_path, "w", encoding="utf-8") as f:
+        f.write(new_title + "\n")
+
+    print(green(f"Renamed session {cyan(s['uuid'])} to: {yellow(new_title)}"))
+
+def parse_older_than(val):
+    m = re.match(r"^(\d+)([dwmy]?)$", val.lower())
+    if not m:
+        raise ValueError(f"Invalid duration '{val}'. Examples: 7d (days), 2w (weeks), 1m (months)")
+    num, unit = int(m.group(1)), m.group(2)
+    if unit in ('', 'd'):
+        return timedelta(days=num)
+    elif unit == 'w':
+        return timedelta(weeks=num)
+    elif unit == 'm':
+        return timedelta(days=num * 30)
+    elif unit == 'y':
+        return timedelta(days=num * 365)
+    return timedelta(days=num)
+
+def delete_session_on_disk(session):
+    base_dir = get_sessions_dir()
+    shutil.rmtree(session["path"])
+    view_cache = os.path.join(base_dir, ".msp-view-v1", session["uuid"])
+    if os.path.exists(view_cache):
+        shutil.rmtree(view_cache, ignore_errors=True)
+
+    parent = os.path.dirname(session["path"])
+    for _ in range(3):
+        if os.path.exists(parent) and not os.listdir(parent):
+            try:
+                os.rmdir(parent)
+                parent = os.path.dirname(parent)
+            except OSError:
+                break
+        else:
+            break
+
+def cmd_delete(args):
+    sessions = find_all_sessions()
+    to_delete = []
+
+    if args.all:
+        to_delete = sessions
+    elif args.last:
+        sessions.sort(key=lambda s: s["created_at"], reverse=True)
+        if sessions:
+            to_delete = [sessions[0]]
+    elif args.cwd:
+        cwd = os.path.abspath(os.getcwd())
+        to_delete = [s for s in sessions if os.path.abspath(s["workspace"]) == cwd]
+    elif args.workspace:
+        ws_target = os.path.abspath(args.workspace)
+        to_delete = [s for s in sessions if os.path.abspath(s["workspace"]) == ws_target]
+    elif args.older_than:
+        try:
+            delta = parse_older_than(args.older_than)
+            cutoff = datetime.now() - delta
+            to_delete = [s for s in sessions if s["created_at"] < cutoff]
+        except ValueError as e:
+            print(red(f"Error: {e}"), file=sys.stderr)
+            sys.exit(1)
+    elif args.session_ids:
+        for sid in args.session_ids:
+            target = sid.lower()
+            matches = [s for s in sessions if s["uuid"].lower().startswith(target)]
+            if not matches:
+                print(yellow(f"Warning: No session found matching '{sid}'."), file=sys.stderr)
+            elif len(matches) > 1:
+                print(red(f"Error: Ambiguous session ID '{sid}'. Multiple matches found:"), file=sys.stderr)
+                for m in matches:
+                    print(f"  {m['uuid']}", file=sys.stderr)
+                sys.exit(1)
+            else:
+                to_delete.append(matches[0])
+    else:
+        print(red("Error: Specify session UUID(s) or one of --all, --last, --cwd, --workspace, --older-than"), file=sys.stderr)
+        sys.exit(1)
+
+    if not to_delete:
+        print("No matching sessions found to delete.")
+        return
+
+    # Check for active locks
+    locked = [s for s in to_delete if s["is_locked"]]
+    if locked:
+        print(yellow("Warning: The following sessions are currently active (running):"), file=sys.stderr)
+        for s in locked:
+            print(f"  • {s['uuid']} (PID {s['lock_pid']})", file=sys.stderr)
+        if not args.force:
+            print(red("Aborting deletion of active sessions. Use -f / --force to override."), file=sys.stderr)
+            sys.exit(1)
+
+    print(f"\nThe following {bold(str(len(to_delete)))} session(s) will be deleted:")
+    total_size = sum(s["size_bytes"] for s in to_delete)
+    for s in to_delete:
+        title_str = f" [{s['custom_title']}]" if s['custom_title'] else ""
+        print(f"  • {cyan(s['uuid'])}{yellow(title_str)} ({green(format_size(s['size_bytes']))}) - {bold(s['workspace'])}")
+        print(f"    Path: {dim(s['path'])}")
+    print(f"\nTotal space to reclaim: {bold(format_size(total_size))}")
+
+    if not args.yes:
+        try:
+            choice = input(f"\n{yellow('Are you sure you want to permanently delete these session(s)?')} [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            sys.exit(1)
+        if choice not in ('y', 'yes'):
+            print("Aborted.")
+            return
+
+    deleted_count = 0
+    for s in to_delete:
+        try:
+            delete_session_on_disk(s)
+            deleted_count += 1
+            print(f"Deleted: {s['uuid']}")
+        except Exception as e:
+            print(red(f"Error deleting {s['uuid']}: {e}"), file=sys.stderr)
+
+    print(green(f"\nSuccessfully deleted {deleted_count} session(s). Reclaimed {format_size(total_size)}."))
+
+# =========================================================================
+# Interactive TUI Picker & Help Modal (curses)
+# =========================================================================
+
+def curses_readline(stdscr, y, x, prompt, max_len=60):
+    curses.echo()
+    curses.curs_set(1)
+    stdscr.addstr(y, x, prompt, curses.color_pair(3) | curses.A_BOLD)
+    stdscr.clrtoeol()
+    stdscr.refresh()
+    try:
+        val = stdscr.getstr(y, x + len(prompt), max_len).decode("utf-8", errors="ignore").strip()
+    except Exception:
+        val = ""
+    curses.noecho()
+    curses.curs_set(0)
+    return val
+
+def show_info_modal(stdscr, session):
+    h, w = stdscr.getmaxyx()
+    box_h = min(16, h - 4)
+    box_w = min(82, w - 6)
+    start_y = (h - box_h) // 2
+    start_x = (w - box_w) // 2
+
+    win = curses.newwin(box_h, box_w, start_y, start_x)
+    win.box()
+    win.addstr(0, 2, " Session Information ", curses.A_BOLD | curses.color_pair(2))
+
+    info_lines = [
+        f"UUID:        {session['uuid']}",
+        f"Title:       {session['custom_title'] or '(none)'}",
+        f"Workspace:   {session['workspace']}",
+        f"Created:     {session['created_at'].strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Model ID:    {session['model_id']}",
+        f"Total Size:  {format_size(session['size_bytes'])}",
+        f"Lock Status: {'ACTIVE (PID ' + str(session['lock_pid']) + ')' if session['is_locked'] else 'Inactive'}",
+        f"Events:      {session['events_count']}",
+        f"Prompt:      {session['prompt'][:box_w - 18]}",
+        f"Disk Path:   {session['path']}"
+    ]
+
+    for idx, line in enumerate(info_lines):
+        if idx + 2 < box_h - 2:
+            win.addstr(idx + 2, 2, line[:box_w - 4])
+
+    win.addstr(box_h - 2, 2, "Press any key to return...", curses.A_DIM)
+    win.refresh()
+    win.getch()
+
+def show_help_modal(stdscr):
+    help_sections = [
+        ("=== MUSE SESSIONS MANAGER — HELP MANUAL ===", ""),
+        ("NAVIGATION", ""),
+        ("  ↑ / k           ", "Move selection up one session"),
+        ("  ↓ / j           ", "Move selection down one session"),
+        ("  PgUp / PgDn     ", "Jump 10 sessions up / down"),
+        ("  Home / End      ", "Jump directly to the first / last session"),
+        ("", ""),
+        ("HOTKEY ACTIONS", ""),
+        ("  Enter           ", "Resume highlighted session immediately (muse resume <UUID>)"),
+        ("  F2 / r          ", "Rename session (stores custom label in .session.title)"),
+        ("  F4 / d / Del    ", "Delete session permanently (prompts for confirmation [y/N])"),
+        ("  i               ", "Inspect full metadata, prompt, model, and disk path"),
+        ("  w               ", "Toggle workspace filter (All Workspaces vs Current Working Directory)"),
+        ("  ? / h / F1      ", "Show this comprehensive help manual"),
+        ("  q / Esc         ", "Exit interactive session picker and return to shell"),
+        ("", ""),
+        ("STORAGE ARCHITECTURE", ""),
+        ("  Directory       ", "~/.local/share/muse/sessions/<YYYY>/<MM>/<DD>/<UUID>/"),
+        ("  session.jsonl   ", "JSON Lines log of all prompts, reasoning, tool calls, and outputs"),
+        ("  .session.title  ", "Local title override file created when renaming"),
+        ("  .session.lock   ", "Active lock file containing the PID of running agent processes"),
+        ("  .msp-view-v1/   ", "Cache directory used by Muse TUI for fast index loading"),
+        ("", ""),
+        ("DELETION & SAFETY BEHAVIOR", ""),
+        ("  • Interactive   ", "Requires explicit 'y' confirmation before removing files"),
+        ("  • Active Lock   ", "Warns if a session is currently running; requires force (-f) to delete"),
+        ("  • Clean Purge   ", "Deletes session directory, .msp-view-v1 cache, and empty parent date dirs")
+    ]
+
+    scroll_y = 0
+
+    while True:
+        h, w = stdscr.getmaxyx()
+        box_h = min(len(help_sections) + 4, h - 2)
+        box_w = min(96, w - 4)
+        start_y = max(0, (h - box_h) // 2)
+        start_x = max(0, (w - box_w) // 2)
+
+        win = curses.newwin(box_h, box_w, start_y, start_x)
+        win.box()
+        win.addstr(0, 2, " Help & Keyboard Reference ", curses.A_BOLD | curses.color_pair(2))
+
+        visible_height = box_h - 3
+        max_scroll = max(0, len(help_sections) - visible_height)
+        scroll_y = max(0, min(scroll_y, max_scroll))
+
+        for i in range(visible_height):
+            idx = scroll_y + i
+            if idx >= len(help_sections):
+                break
+            key_part, desc_part = help_sections[idx]
+            y_pos = 1 + i
+
+            if key_part.startswith("==="):
+                win.addstr(y_pos, 2, key_part[:box_w - 4], curses.A_BOLD | curses.color_pair(1))
+            elif key_part and not desc_part:
+                win.addstr(y_pos, 2, key_part[:box_w - 4], curses.A_BOLD | curses.color_pair(3))
+            elif key_part:
+                win.addstr(y_pos, 2, key_part[:box_w - 4], curses.A_BOLD | curses.color_pair(2))
+                win.addstr(y_pos, 20, desc_part[:box_w - 22])
+
+        scroll_indicator = f" [{scroll_y + 1}-{min(len(help_sections), scroll_y + visible_height)}/{len(help_sections)}] " if max_scroll > 0 else " "
+        footer_text = f"{scroll_indicator}Press ↑/↓ to scroll • q/Esc/Enter to close"
+        win.addstr(box_h - 1, max(2, box_w - len(footer_text) - 2), footer_text[:box_w - 4], curses.A_DIM)
+
+        win.refresh()
+        ch = win.getch()
+
+        if ch in (ord('q'), ord('Q'), 27, ord('\n'), ord('\r'), ord(' ')):
+            break
+        elif ch in (curses.KEY_UP, ord('k')):
+            if scroll_y > 0:
+                scroll_y -= 1
+        elif ch in (curses.KEY_DOWN, ord('j')):
+            if scroll_y < max_scroll:
+                scroll_y += 1
+        elif ch in (curses.KEY_PPAGE,):
+            scroll_y = max(0, scroll_y - 8)
+        elif ch in (curses.KEY_NPAGE,):
+            scroll_y = min(max_scroll, scroll_y + 8)
+
+def run_curses_tui(stdscr):
+    # Setup curses environment
+    curses.curs_set(0)
+    curses.use_default_colors()
+    if curses.has_colors():
+        curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)   # Selection / Headers
+        curses.init_pair(2, curses.COLOR_CYAN, -1)                   # UUIDs / Info
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)                 # Alerts / Titles / Sections
+        curses.init_pair(4, curses.COLOR_GREEN, -1)                  # Size / Success
+        curses.init_pair(5, curses.COLOR_RED, -1)                    # Warning / Errors
+
+    cwd_filter = False
+    status_msg = ""
+    status_color = 0
+
+    all_sessions = find_all_sessions()
+    all_sessions.sort(key=lambda s: s["created_at"], reverse=True)
+
+    selected_idx = 0
+    top_idx = 0
+    resume_uuid = None
+
+    cwd_path = os.path.abspath(os.getcwd())
+
+    while True:
+        # Filter list
+        if cwd_filter:
+            sessions = [s for s in all_sessions if os.path.abspath(s["workspace"]) == cwd_path]
+        else:
+            sessions = all_sessions
+
+        h, w = stdscr.getmaxyx()
+        stdscr.erase()
+
+        # Header
+        filter_text = f"[Filter: Current Workspace ({cwd_path})]" if cwd_filter else "[Filter: All Workspaces]"
+        header = f" Muse Code Session Manager — {len(sessions)} session(s) {filter_text}"
+        stdscr.addstr(0, 0, header[:w-1].ljust(w-1), curses.A_BOLD | curses.color_pair(1))
+
+        # Footer
+        footer = " [Enter] Resume  [F2/r] Rename  [F4/d] Delete  [i] Info  [w] Filter  [?] Help  [q] Quit "
+        stdscr.addstr(h - 1, 0, footer[:w-1].ljust(w-1), curses.A_REVERSE)
+
+        # Status Message if any
+        if status_msg:
+            stdscr.addstr(h - 2, 0, f" ▶ {status_msg}"[:w-1], status_color | curses.A_BOLD)
+
+        list_height = h - 3
+        if list_height <= 0 or not sessions:
+            if not sessions:
+                stdscr.addstr(2, 2, "No sessions found.", curses.A_DIM)
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord('q'), ord('Q'), 27):
+                break
+            elif key in (ord('w'), ord('W')):
+                cwd_filter = not cwd_filter
+            elif key in (ord('?'), ord('h'), ord('H'), curses.KEY_F1):
+                show_help_modal(stdscr)
+            continue
+
+        # Adjust selection bounds
+        if selected_idx >= len(sessions):
+            selected_idx = max(0, len(sessions) - 1)
+        if selected_idx < top_idx:
+            top_idx = selected_idx
+        elif selected_idx >= top_idx + list_height:
+            top_idx = selected_idx - list_height + 1
+
+        # Draw session rows
+        for i in range(list_height):
+            idx = top_idx + i
+            if idx >= len(sessions):
+                break
+            s = sessions[idx]
+            y = 1 + i
+
+            dt_str = s["created_at"].strftime("%Y-%m-%d %H:%M")
+            sz_str = format_size(s["size_bytes"])
+            title_text = s["custom_title"] if s["custom_title"] else s["prompt"]
+            title_clean = title_text.replace("\n", " ").strip()
+
+            line_str = f" {dt_str} | {s['uuid'][:8]} | {sz_str:>8} | {s['workspace']} : {title_clean}"
+            if s["custom_title"]:
+                line_str = f" {dt_str} | {s['uuid'][:8]} | {sz_str:>8} | 🏷️ {s['custom_title']} ({title_clean})"
+
+            line_padded = line_str[:w-1].ljust(w-1)
+
+            if idx == selected_idx:
+                stdscr.addstr(y, 0, line_padded, curses.color_pair(1) | curses.A_BOLD)
+            else:
+                stdscr.addstr(y, 0, line_padded)
+
+        stdscr.refresh()
+        key = stdscr.getch()
+
+        status_msg = ""  # clear status after next key
+
+        # Navigation
+        if key in (curses.KEY_UP, ord('k')):
+            if selected_idx > 0:
+                selected_idx -= 1
+        elif key in (curses.KEY_DOWN, ord('j')):
+            if selected_idx < len(sessions) - 1:
+                selected_idx += 1
+        elif key == curses.KEY_PPAGE:
+            selected_idx = max(0, selected_idx - 10)
+        elif key == curses.KEY_NPAGE:
+            selected_idx = min(len(sessions) - 1, selected_idx + 10)
+        elif key == curses.KEY_HOME:
+            selected_idx = 0
+        elif key == curses.KEY_END:
+            selected_idx = len(sessions) - 1
+
+        # Quit
+        elif key in (ord('q'), ord('Q'), 27):
+            break
+
+        # Help Modal (? or h or F1)
+        elif key in (ord('?'), ord('h'), ord('H'), curses.KEY_F1):
+            show_help_modal(stdscr)
+
+        # Filter Workspace toggle
+        elif key in (ord('w'), ord('W')):
+            cwd_filter = not cwd_filter
+            selected_idx = 0
+            top_idx = 0
+
+        # Info
+        elif key in (ord('i'), ord('I')):
+            if sessions:
+                show_info_modal(stdscr, sessions[selected_idx])
+
+        # Resume Session (Enter)
+        elif key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            if sessions:
+                resume_uuid = sessions[selected_idx]["uuid"]
+                break
+
+        # Rename Session (F2 or r)
+        elif key in (curses.KEY_F2, ord('r'), ord('R')):
+            if sessions:
+                s = sessions[selected_idx]
+                prompt_label = f"Rename session {s['uuid'][:8]} (empty to clear): "
+                new_val = curses_readline(stdscr, h - 2, 0, prompt_label)
+                title_path = os.path.join(s["path"], ".session.title")
+                if new_val:
+                    with open(title_path, "w", encoding="utf-8") as f:
+                        f.write(new_val + "\n")
+                    s["custom_title"] = new_val
+                    status_msg = f"Renamed session to: {new_val}"
+                    status_color = curses.color_pair(4)
+                else:
+                    if os.path.exists(title_path):
+                        os.remove(title_path)
+                    s["custom_title"] = None
+                    status_msg = "Custom title cleared."
+                    status_color = curses.color_pair(3)
+
+        # Delete Session (F4, Delete, d)
+        elif key in (curses.KEY_F4, curses.KEY_DC, ord('d'), ord('D')):
+            if sessions:
+                s = sessions[selected_idx]
+                confirm_prompt = f"Delete session {s['uuid'][:8]} ({format_size(s['size_bytes'])})? [y/N]: "
+                answer = curses_readline(stdscr, h - 2, 0, confirm_prompt, max_len=10).lower()
+                if answer in ('y', 'yes'):
+                    try:
+                        delete_session_on_disk(s)
+                        all_sessions = [item for item in all_sessions if item["uuid"] != s["uuid"]]
+                        status_msg = f"Deleted session {s['uuid'][:8]}."
+                        status_color = curses.color_pair(4)
+                    except Exception as err:
+                        status_msg = f"Error deleting: {err}"
+                        status_color = curses.color_pair(5)
+                else:
+                    status_msg = "Deletion cancelled."
+                    status_color = curses.color_pair(3)
+
+    return resume_uuid
+
+def interactive_ui():
+    if not sys.stdin.isatty():
+        print("Error: Interactive picker requires an active terminal.", file=sys.stderr)
+        sys.exit(1)
+    resume_target = curses.wrapper(run_curses_tui)
+    if resume_target:
+        print(f"Resuming session {cyan(resume_target)}...")
+        os.execvp("muse", ["muse", "resume", resume_target])
+
+# =========================================================================
+# Exhaustive CLI Help Page
+# =========================================================================
+
+def print_exhaustive_help():
+    title = bold("MUSE SESSIONS MANAGER — COMPREHENSIVE MANUAL")
+    border = "=" * 78
+
+    help_content = f"""
+{border}
+{title}
+{border}
+
+{bold("OVERVIEW")}
+  Muse Code automatically persists every agent run into a session directory
+  containing raw event logs, tool calls, user messages, and local file changes.
+  
+  `muse sessions` (or `muse session`) provides full lifecycle management:
+  • Browse sessions via an interactive full-screen TUI with instant resume
+  • Rename sessions with friendly tags and labels
+  • Inspect session metadata, token records, and disk usage
+  • Delete individual or batch sessions to reclaim disk space
+
+{bold("STORAGE ARCHITECTURE")}
+  Sessions are stored in your XDG data home:
+    {cyan("$XDG_DATA_HOME/muse/sessions/<YYYY>/<MM>/<DD>/<SESSION-UUID>/")}
+    (Defaults to: {cyan("~/.local/share/muse/sessions/")})
+
+  Directory Contents per Session:
+    • {bold("session.jsonl")}               Verbatim JSON Lines event log of all turns
+    • {bold(".session.title")}              Custom name/label set via rename
+    • {bold(".session.lock")}               Liveness lock containing PID of running agent
+    • {bold(".msp-view-v1/")}               Cache folder used by Muse for fast TUI resumes
+    • {bold("approval-review/")}            Recorded security/tool approval reviews
+
+{bold("INTERACTIVE TUI SELECTOR")}
+  Run without arguments (or with `{cyan("select")}` / `{cyan("ui")}`):
+    {green("muse sessions")}
+
+  Keyboard Shortcuts in TUI:
+    {yellow("↑ / k")}               Move selection up
+    {yellow("↓ / j")}               Move selection down
+    {yellow("PgUp / PgDn")}         Scroll 10 sessions up / down
+    {yellow("Home / End")}          Jump to first / last session
+    {yellow("Enter")}               {bold("Resume")} highlighted session ({dim("muse resume <UUID>")})
+    {yellow("F2 / r")}              {bold("Rename")} session (set custom title tag)
+    {yellow("F4 / d / Del")}        {bold("Delete")} session (prompts for confirmation [y/N])
+    {yellow("i")}                   {bold("Inspect")} full metadata in modal dialog
+    {yellow("w")}                   {bold("Filter")} toggle: All Workspaces vs Current Working Dir
+    {yellow("? / h / F1")}          Open interactive {bold("Help")} reference
+    {yellow("q / Esc")}             {bold("Quit")} back to your terminal shell
+
+{bold("CLI SUBCOMMANDS & EXAMPLES")}
+
+  {bold("1. Interactive Selector (Default):")}
+     $ {green("muse sessions")}
+     $ {green("muse sessions select")}
+
+  {bold("2. List Sessions:")}
+     $ {green("muse sessions list")}                    List all sessions with size & prompt
+     $ {green("muse sessions list --cwd")}              Filter to current directory workspace
+     $ {green("muse sessions list -w /path/to/repo")}   Filter to specific workspace
+     $ {green("muse sessions list --last")}             Show only the most recent session
+     $ {green("muse sessions list -q")}                 Print only session UUIDs (script-friendly)
+
+  {bold("3. Rename / Tag Sessions:")}
+     $ {green("muse sessions rename <UUID> \"Feature Auth\"")}     Set custom title label
+     $ {green("muse sessions rename <UUID> \"\"")}                 Clear custom title
+
+  {bold("4. Inspect Session Metadata:")}
+     $ {green("muse sessions info <UUID>")}             Show full path, model, size, lock PID
+
+  {bold("5. Delete Sessions:")}
+     $ {green("muse sessions delete <UUID>")}           Delete a session by UUID or prefix
+     $ {green("muse sessions delete --last")}           Delete the most recent session
+     $ {green("muse sessions delete --cwd")}            Delete all sessions for current workspace
+     $ {green("muse sessions delete --older-than 14d")} Delete sessions older than 14 days
+     $ {green("muse sessions delete --all")}            Delete all stored sessions
+     $ {green("muse sessions delete <UUID> -y")}        Skip interactive [y/N] confirmation prompt
+     $ {green("muse sessions delete <UUID> -f")}        Force delete even if active lock exists
+
+{bold("INVOCATION NOTE")}
+  All commands work identically whether you type:
+    {green("muse sessions <cmd>")}, {green("muse session <cmd>")}, or {green("muse-session <cmd>")}
+
+{bold("SAFETY & RETENTION")}
+  • Deletions purge the session folder, view cache, and clean up empty date dirs.
+  • Interactive confirmation is required by default; never deletes unprompted.
+  • Running processes (locked sessions) are detected via PID and protected from
+    accidental deletion unless forced with {yellow("-f / --force")}.
+{border}
+"""
+    print(help_content)
+
+# =========================================================================
+# Main CLI Entrypoint
+# =========================================================================
+
+def main():
+    prog_name = "muse sessions"
+    parser = argparse.ArgumentParser(
+        prog=prog_name,
+        description="Manage, inspect, rename, and delete Muse Code sessions.",
+        epilog=f"Run '{prog_name} help' or press '?' inside the interactive TUI for full documentation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Session subcommands")
+
+    # list / ls
+    p_list = subparsers.add_parser("list", aliases=["ls"], help="List stored sessions")
+    p_list.add_argument("--cwd", action="store_true", help="Filter by current working directory workspace")
+    p_list.add_argument("-w", "--workspace", help="Filter by workspace path")
+    p_list.add_argument("--last", action="store_true", help="Show only the most recent session")
+    p_list.add_argument("-q", "--quiet", action="store_true", help="Only output session UUIDs")
+
+    # interactive select / pick / ui
+    p_sel = subparsers.add_parser("select", aliases=["pick", "ui"], help="Open interactive TUI session picker")
+
+    # info / show
+    p_info = subparsers.add_parser("info", aliases=["show"], help="Show details for a session")
+    p_info.add_argument("session_id", help="Session UUID or prefix")
+
+    # rename / mv
+    p_ren = subparsers.add_parser("rename", aliases=["mv"], help="Rename a session with a custom label")
+    p_ren.add_argument("session_id", help="Session UUID or prefix")
+    p_ren.add_argument("new_title", help="New custom title (empty quotes to clear)")
+
+    # delete / rm
+    p_del = subparsers.add_parser("delete", aliases=["rm"], help="Delete one or more sessions")
+    p_del.add_argument("session_ids", nargs="*", help="Session UUID(s) or prefixes to delete")
+    p_del.add_argument("--all", action="store_true", help="Delete ALL sessions")
+    p_del.add_argument("--last", action="store_true", help="Delete the most recent session")
+    p_del.add_argument("--cwd", action="store_true", help="Delete all sessions in current working directory workspace")
+    p_del.add_argument("-w", "--workspace", help="Delete all sessions in specified workspace")
+    p_del.add_argument("--older-than", help="Delete sessions older than duration (e.g. 7d, 2w, 1m)")
+    p_del.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+    p_del.add_argument("-f", "--force", action="store_true", help="Force deletion even if active/locked")
+
+    # help subcommand
+    p_help = subparsers.add_parser("help", aliases=["manual"], help="Show comprehensive manual and documentation")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        # Default with no arguments: open interactive picker if terminal, else list
+        if sys.stdin.isatty():
+            interactive_ui()
+        else:
+            args.cwd = False
+            args.workspace = None
+            args.last = False
+            args.quiet = False
+            cmd_list(args)
+    elif args.command in ("help", "manual"):
+        print_exhaustive_help()
+    elif args.command in ("select", "pick", "ui"):
+        interactive_ui()
+    elif args.command in ("list", "ls"):
+        cmd_list(args)
+    elif args.command in ("info", "show"):
+        cmd_info(args)
+    elif args.command in ("rename", "mv"):
+        cmd_rename(args)
+    elif args.command in ("delete", "rm"):
+        cmd_delete(args)
+
+if __name__ == "__main__":
+    main()

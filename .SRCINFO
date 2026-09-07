@@ -1,0 +1,34 @@
+pkgbase = muse-code
+	pkgdesc = Terminal-based AI coding agent powered by Meta's Muse Spark (dev.meta.ai)
+	pkgver = 1.0.3.r2198.1
+	pkgrel = 1
+	url = https://dev.meta.ai
+	arch = x86_64
+	arch = aarch64
+	license = custom:Meta Model API Terms of Service
+	depends = ca-certificates
+	depends = python
+	optdepends = git: for workspace worktree isolation and version control operations
+	optdepends = qemu-user: to emulate AVX2 instructions on legacy CPUs (pre-Haswell)
+	provides = muse-code-bin
+	provides = musecode
+	provides = muse-bin
+	provides = musecode-bin
+	provides = muse
+	conflicts = muse-code-bin
+	conflicts = musecode-bin
+	conflicts = musecode
+	conflicts = muse-bin
+	options = !strip
+	source = muse.sh
+	source = muse-session
+	source = muse-mcp
+	sha256sums = cecb4b129eedb4ba15a73a16bc3589a6120eb9c12dbf2b8b05ecfaa0b8ca7feb
+	sha256sums = 2e37ab20bcbce1c5219164567d0e34ee09ddfc3cd761398855059d77af88f306
+	sha256sums = 3bc21891bd9ce78c2d244f1e66a04814398c2bdc8501e147ba7267efdb55bfc4
+	source_x86_64 = muse-code-1.0.3.r2198.1-x86_64::https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.0.3-R2198.1&file=muse-x86-linux
+	sha256sums_x86_64 = 75a68f98c437dfd17d264730c5bc72d57e5f1e18d10472a9f53261ffcc091352
+	source_aarch64 = muse-code-1.0.3.r2198.1-aarch64::https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.0.3-R2198.1&file=muse-aarch64-linux
+	sha256sums_aarch64 = 4ffcf55f5eb0668643f30c5febd90d188b9a2da65858918444d31f6046940120
+
+pkgname = muse-code

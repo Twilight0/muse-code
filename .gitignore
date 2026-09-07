@@ -1,0 +1,16 @@
+# Ignore makepkg build artifacts and downloaded sources
+/*
+
+# Whitelist tracking files
+!.gitignore
+!PKGBUILD
+!.SRCINFO
+!README.md
+!LICENSE
+!muse.sh
+!muse-session
+!muse-mcp
+!build-termux.sh
+!update.sh
+!.github/
+!.github/**
