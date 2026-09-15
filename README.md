@@ -109,11 +109,11 @@ sudo pacman -Syu muse-code
 1. Open Termux on your `aarch64` Android device.
 2. Download the latest `.deb` package from [GitHub Releases](https://github.com/Twilight0/muse-code/releases):
    ```bash
-   curl -fLO https://github.com/Twilight0/muse-code/releases/latest/download/muse-code_1.1.1.r2514.1-1_termux_aarch64.deb
+   curl -fLO https://github.com/Twilight0/muse-code/releases/latest/download/muse-code_1.3\.0\.r3057\.1-1_termux_aarch64.deb
    ```
 3. Install the package using `apt` or `dpkg`:
    ```bash
-   apt install ./muse-code_1.1.1.r2514.1-1_termux_aarch64.deb
+   apt install ./muse-code_1.3\.0\.r3057\.1-1_termux_aarch64.deb
    # Dependencies (proot, python, ca-certificates) will be installed automatically
    ```
 4. Run:
