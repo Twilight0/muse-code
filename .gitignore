@@ -14,3 +14,5 @@
 !update.sh
 !.github/
 !.github/**
+!tests/
+!tests/**

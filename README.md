@@ -44,11 +44,11 @@ This repository provides enhanced, production-ready packaging for **Arch Linux /
   * Preserves CLI arguments verbatim (`"$@"`), prevents recursive nested proot tracing, sets up TLS certificate stores (`SSL_CERT_FILE`), and resolves working directories cleanly.
   * Packaged as a clean Termux Debian package (`.deb`) installable directly via `dpkg -i` or `apt`.
 
-### 2. AVX2 Instruction Emulation for Legacy CPUs
-* **The Problem**: The official upstream x86_64 binary requires AVX2 instructions (introduced in Intel Haswell, 2013). Running on older hardware (such as Intel Sandy Bridge, Ivy Bridge, older Celerons, or early AMD architectures) triggers a fatal `Illegal instruction (core dumped)` crash.
+### 2. Opt-in AVX2 Instruction Emulation for Legacy CPUs
+* **Background**: Older upstream x86_64 binaries required AVX2 instructions (introduced in Intel Haswell, 2013). Running on older hardware (such as Intel Sandy Bridge, Ivy Bridge, older Celerons, or early AMD architectures) triggered a fatal `Illegal instruction (core dumped)` crash. Recent upstream releases (>= 1.4.7, verified through 1.4.10) run natively on pre-AVX2 CPUs, so emulation is no longer applied automatically.
 * **Our Solution**:
-  * The wrapper inspects `/proc/cpuinfo` on `x86_64`.
-  * If `avx2` support is absent, it seamlessly delegates execution to `qemu-x86_64 -cpu max "$REAL_BIN" "$@"`, allowing Muse Code to run on legacy computers without user intervention.
+  * The wrapper executes the real binary natively by default.
+  * QEMU emulation stays available as an explicit opt-in for edge cases: set `MUSE_QEMU=1` in the environment or pass `--qemu` as the first argument, and execution is routed through `qemu-x86_64 -cpu max "$REAL_BIN" "$@"`.
 
 ### 3. Interactive TUI Session Manager (`muse sessions`)
 Muse Code organizes sessions with UUIDs. We provide an integrated curses-based full-screen terminal interface to manage them:
@@ -72,11 +72,11 @@ Muse Code organizes sessions with UUIDs. We provide an integrated curses-based f
 ### 4. Multi-Agent MCP Server Bridge (`muse mcp`)
 Connect your external Model Context Protocol (MCP) servers effortlessly:
 * **One-Click Import**: Automatically scans and imports MCP configurations from:
-  * **OpenCode** (`~/.config/opencode/opencode.json`)
-  * **Codex CLI** (`~/.codex/config.toml`)
-  * **Claude Desktop** (`~/.config/Claude/claude_desktop_config.json`)
-  * **Antigravity CLI** (`~/.gemini/antigravity-cli/mcp/`)
-* **Full CRUD Management**: List, add, enable, disable, and remove MCP servers stored directly in `~/.config/muse/settings.json`.
+  * **OpenCode** (`~/.config/opencode/opencode.json[c]`, plus `./opencode.json[c]` project config)
+  * **Codex CLI** (`~/.codex/config.toml`, `[mcp_servers.*]`)
+  * **Claude Code** (`~/.claude.json` user scope, `./.mcp.json` project scope)
+  * **Antigravity CLI** (`~/.gemini/config/mcp_config.json`)
+* **Full CRUD Management**: List, add, enable, disable, and remove MCP servers stored in the `mcp_servers` block of `~/.config/muse/settings.json` (official docs key; a `mcpServers` alias is merged on write, and `"schema_version": 1` is ensured).
 
 ---
 
@@ -193,14 +193,17 @@ Configure and bridge MCP tools for Muse Code:
 muse mcp list
 
 # Import all detected servers from other coding agents
-muse mcp import --all
+muse mcp import
 
-# Import specifically from Claude Desktop or OpenCode
-muse mcp import --from claude
-muse mcp import --from opencode
+# Import specifically from Claude Code or OpenCode
+muse mcp import claude
+muse mcp import opencode
 
-# Add a standard stdio MCP server
-muse mcp add fetch --command "uvx" --args "mcp-server-fetch"
+# Preview without writing
+muse mcp import claude --dry-run
+
+# Add a standard stdio MCP server (command + args are positional)
+muse mcp add fetch uvx mcp-server-fetch
 
 # Enable / disable a configured server
 muse mcp disable fetch
@@ -239,10 +242,10 @@ graph TD
     PROOT --> REAL_BIN["Execute upstream Musl binary"]
     TERMUX -->|Yes| REAL_BIN
     
-    CHECK_ENV -->|Linux x86_64| AVX2{"CPU supports AVX2?"}
-    AVX2 -->|No| QEMU["qemu-x86_64 -cpu max"]
-    QEMU --> REAL_BIN
-    AVX2 -->|Yes| REAL_BIN
+    CHECK_ENV -->|Linux x86_64| QEMU{"MUSE_QEMU=1 or --qemu?"}
+    QEMU -->|Yes| QEMURUN["qemu-x86_64 -cpu max"]
+    QEMURUN --> REAL_BIN
+    QEMU -->|No| REAL_BIN
 ```
 
 | Component | Path | Description |
@@ -267,11 +270,12 @@ graph TD
 * This is completely normal on Android and does not affect code generation or tool operations.
 
 ### Legacy x86_64 CPU: "Illegal instruction"
-* If you run Muse on an older CPU and see an illegal instruction error, ensure `qemu-user` is installed:
+* Recent releases run natively on pre-AVX2 CPUs, so no action is needed in the normal case. If you still hit an illegal instruction error, install `qemu-user` and opt in to emulation explicitly:
   ```bash
   sudo pacman -S qemu-user
+  MUSE_QEMU=1 muse
+  # or: muse --qemu
   ```
-  The wrapper will then automatically route execution through QEMU CPU emulation.
 
 ---
 
