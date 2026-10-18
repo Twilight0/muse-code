@@ -46,7 +46,7 @@ class WrapperTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_wrapper(self, args, extra_env=None, path=None):
+    def run_wrapper(self, args, extra_env=None, path=None, cwd=None):
         env = dict(self.base_env)
         if path is not None:
             env["PATH"] = path
@@ -61,6 +61,7 @@ class WrapperTest(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
             timeout=60,
+            cwd=cwd,
         )
 
     def read_log(self, path):
@@ -93,6 +94,47 @@ class WrapperTest(unittest.TestCase):
             "-cpu max %s exec hello" % self.real_bin,
         )
         self.assertFalse(os.path.exists(self.native_log))
+
+    def make_fake_proot(self):
+        """A proot stand-in that records its argv (arg construction test)."""
+        self.proot_log = os.path.join(self.tmp.name, "proot.log")
+        fake_proot = os.path.join(self.fakebin, "proot")
+        with open(fake_proot, "w") as f:
+            f.write("#!/bin/bash\necho \"$@\" > %s\nexit 0\n" % self.proot_log)
+        os.chmod(fake_proot, 0o755)
+
+    def test_proot_gets_canonical_root_home_bind_and_virtual_cwd(self):
+        """Termux: guest must see a virtual cwd, never the host path."""
+        self.make_fake_proot()
+        home = os.path.join(self.tmp.name, "home")
+        work = os.path.join(self.tmp.name, "work")
+        os.makedirs(home)
+        os.makedirs(work)
+        proc = self.run_wrapper(
+            ["exec", "hello"],
+            extra_env={"TERMUX_VERSION": "1", "HOME": home},
+            cwd=work,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        logged = self.read_log(self.proot_log)
+        self.assertIn("-r %s" % self.tmp.name, logged)
+        self.assertIn("-b %s:/home" % home, logged)
+        self.assertIn("--cwd=/work", logged)
+        self.assertIn(self.real_bin, logged)
+        self.assertNotIn("--cwd=.", logged)
+        self.assertNotIn("--trust-workspace", logged)
+        self.assertFalse(os.path.exists(self.native_log))
+
+    def test_proot_recursion_guard_runs_native(self):
+        """PROOT_ACTIVE=1 means already inside the guest: run directly."""
+        self.make_fake_proot()
+        proc = self.run_wrapper(
+            ["--version"],
+            extra_env={"TERMUX_VERSION": "1", "PROOT_ACTIVE": "1"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.read_log(self.native_log), "--version")
+        self.assertFalse(os.path.exists(self.proot_log))
 
     def test_opt_in_without_qemu_fails_loudly(self):
         """Opt-in with no qemu-x86_64 on PATH errors instead of running native."""
