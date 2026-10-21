@@ -267,7 +267,7 @@ graph TD
 ### Termux: Bubblewrap Warning
 * Under unrooted Termux, Linux user namespaces are unavailable, so Bubblewrap sandboxing (`bwrap`) is not functional. Muse detects this automatically and logs:
   `muse: Bubblewrap is unavailable for linux: no capability-valid system bwrap was found...`
-* This is completely normal on Android and does not affect code generation or tool operations.
+* This is completely normal on Android. Code generation itself is unaffected, but sandboxed tool operations may fail without a working sandbox — if tool calls error out, retry with `--disable-sandbox`.
 
 ### Legacy x86_64 CPU: "Illegal instruction"
 * Recent releases run natively on pre-AVX2 CPUs, so no action is needed in the normal case. If you still hit an illegal instruction error, install `qemu-user` and opt in to emulation explicitly:
