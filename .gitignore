@@ -10,6 +10,7 @@
 !muse.sh
 !muse-session
 !muse-mcp
+!muse-stats
 !build-termux.sh
 !update.sh
 !.github/
