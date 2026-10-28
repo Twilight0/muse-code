@@ -147,6 +147,46 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("qemu-x86_64 was not found", proc.stderr)
         self.assertFalse(os.path.exists(self.native_log))
 
+    def make_fake_helper(self, name):
+        """A lib helper stand-in under the fake $PREFIX that logs argv."""
+        log = os.path.join(self.tmp.name, name + ".log")
+        helper = os.path.join(self.prefix, "lib", "muse", "muse-" + name)
+        with open(helper, "w") as f:
+            f.write("#!/bin/bash\necho \"$@\" > %s\nexit 0\n" % log)
+        os.chmod(helper, 0o755)
+        return log
+
+    def test_import_dispatches_all_forms_to_helper(self):
+        """muse import always reaches muse-import (no native verb exists)."""
+        log = self.make_fake_helper("import")
+        for argv in (["import"], ["import", "list"],
+                     ["import", "import", "some-id", "--dry-run"],
+                     ["import", "--from", "agy", "some-id"],
+                     ["import", "some-id"]):
+            if os.path.exists(log):
+                os.remove(log)
+            proc = self.run_wrapper(argv)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(os.path.exists(log), argv)
+        self.assertFalse(os.path.exists(self.native_log))
+
+    def test_stats_flag_first_form_reaches_helper(self):
+        """muse stats --since X must not fall through (whitelisted flags)."""
+        log = self.make_fake_helper("stats")
+        proc = self.run_wrapper(["stats", "--since", "2026-10-01"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.read_log(log), "--since 2026-10-01")
+        self.assertFalse(os.path.exists(self.native_log))
+
+    def test_mcp_login_passes_through_to_native(self):
+        """Native mcp subcommands (login/logout) bypass the helper."""
+        log = self.make_fake_helper("mcp")
+        proc = self.run_wrapper(["mcp", "login", "srv"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.read_log(self.native_log), "mcp login srv")
+        self.assertFalse(os.path.exists(log))
+
+
 
 if __name__ == "__main__":
     unittest.main()

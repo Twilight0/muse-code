@@ -82,9 +82,9 @@ Connect your external Model Context Protocol (MCP) servers effortlessly:
 
 ### 5. Foreign Session Importer (`muse import`)
 Bring conversations from other agents into Muse Code as native, resumable sessions:
-* **omp → Muse**: Converts `~/.omp/agent/sessions` JSONL (user prompts, assistant text, tool history as plain text) into a real `session.jsonl` + `session-index.db` row — then `muse resume <UUID>` continues it.
-* **Provenance-safe**: Tool calls/imports stay plain text (never synthesized tool payloads), foreign system prompts and credential material are dropped, skipped counts reported.
-* **Verify-first workflow**: every import previews with `--dry-run`, and the result validates clean under `muse export` / `muse trace inspect`.
+* **Sources**: omp (`~/.omp/agent/sessions`), Antigravity (`~/.gemini/.../brain` transcripts + summaries db), OpenCode (`session_v2`/`session` tables in `opencode.db`). Auto-detected by id/path; `--from` forces a source.
+* **Provenance-safe**: user prompts and assistant text convert verbatim; tool calls/results stay plain text (never synthesized tool payloads); foreign system prompts, credentials and opaque reasoning are dropped with counts.
+* **Verify-first workflow**: every import previews with `--dry-run`, and the result validates clean under `muse export` / `muse trace inspect` (zero gaps, zero unknown payloads).
 ---
 
 ## 📥 Installation
@@ -225,17 +225,18 @@ muse mcp check
 
 ### Session Import (`muse import`)
 
-Import foreign agent sessions as native Muse sessions:
+Bring foreign agent sessions into Muse Code as native sessions:
 
 ```bash
-# Browse importable omp sessions
+# Browse everything importable (omp + agy + opencode)
 muse import list
+muse import list --source agy
 
 # Preview the conversion (no writes)
-muse import import <ID-or-path> --dry-run
+muse import import --from opencode ses_e8149341e --dry-run
 
 # Import, then resume natively
-muse import import <ID-or-path>
+muse import import 034e3ebd-cae9
 muse resume <NEW-UUID>
 ```
 
