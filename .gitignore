@@ -11,6 +11,7 @@
 !muse-session
 !muse-mcp
 !muse-stats
+!muse-import
 !build-termux.sh
 !update.sh
 !.github/

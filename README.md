@@ -18,6 +18,7 @@ This repository provides enhanced, production-ready packaging for **Arch Linux /
   - [2. AVX2 Instruction Emulation for Legacy CPUs](#2-avx2-instruction-emulation-for-legacy-cpus)
   - [3. Interactive TUI Session Manager (`muse sessions`)](#3-interactive-tui-session-manager-muse-sessions)
   - [4. Multi-Agent MCP Server Bridge (`muse mcp`)](#4-multi-agent-mcp-server-bridge-muse-mcp)
+  - [5. Foreign Session Importer (`muse import`)](#5-foreign-session-importer-muse-import)
 - [📥 Installation](#-installation)
   - [Arch Linux / Manjaro / EndeavourOS](#arch-linux--manjaro--endeavouros)
   - [AliveOS (Pre-built Binary Repository)](#aliveos-pre-built-binary-repository)
@@ -27,6 +28,7 @@ This repository provides enhanced, production-ready packaging for **Arch Linux /
   - [Basic Invocation](#basic-invocation)
   - [Session Manager (`muse sessions`)](#session-manager-muse-sessions)
   - [MCP Server Management (`muse mcp`)](#mcp-server-management-muse-mcp)
+  - [Session Import (`muse import`)](#session-import-muse-import)
   - [Authentication & Provider Configuration](#authentication--provider-configuration)
 - [🔧 Architecture & Implementation](#-architecture--implementation)
 - [❓ Troubleshooting & FAQ](#-troubleshooting--faq)
@@ -78,6 +80,11 @@ Connect your external Model Context Protocol (MCP) servers effortlessly:
   * **Antigravity CLI** (`~/.gemini/config/mcp_config.json`)
 * **Full CRUD Management**: List, add, enable, disable, and remove MCP servers stored in the `mcp_servers` block of `~/.config/muse/settings.json` (official docs key; a `mcpServers` alias is merged on write, and `"schema_version": 1` is ensured).
 
+### 5. Foreign Session Importer (`muse import`)
+Bring conversations from other agents into Muse Code as native, resumable sessions:
+* **omp → Muse**: Converts `~/.omp/agent/sessions` JSONL (user prompts, assistant text, tool history as plain text) into a real `session.jsonl` + `session-index.db` row — then `muse resume <UUID>` continues it.
+* **Provenance-safe**: Tool calls/imports stay plain text (never synthesized tool payloads), foreign system prompts and credential material are dropped, skipped counts reported.
+* **Verify-first workflow**: every import previews with `--dry-run`, and the result validates clean under `muse export` / `muse trace inspect`.
 ---
 
 ## 📥 Installation
@@ -211,6 +218,25 @@ muse mcp enable fetch
 
 # Remove a server
 muse mcp remove fetch
+
+# Check every server actually answers (stdio handshake / HTTP initialize)
+muse mcp check
+```
+
+### Session Import (`muse import`)
+
+Import foreign agent sessions as native Muse sessions:
+
+```bash
+# Browse importable omp sessions
+muse import list
+
+# Preview the conversion (no writes)
+muse import import <ID-or-path> --dry-run
+
+# Import, then resume natively
+muse import import <ID-or-path>
+muse resume <NEW-UUID>
 ```
 
 ### Authentication & Provider Configuration
