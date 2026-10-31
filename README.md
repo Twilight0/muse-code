@@ -18,7 +18,6 @@ This repository provides enhanced, production-ready packaging for **Arch Linux /
   - [2. AVX2 Instruction Emulation for Legacy CPUs](#2-avx2-instruction-emulation-for-legacy-cpus)
   - [3. Interactive TUI Session Manager (`muse sessions`)](#3-interactive-tui-session-manager-muse-sessions)
   - [4. Multi-Agent MCP Server Bridge (`muse mcp`)](#4-multi-agent-mcp-server-bridge-muse-mcp)
-  - [5. Foreign Session Importer (`muse import`)](#5-foreign-session-importer-muse-import)
 - [📥 Installation](#-installation)
   - [Arch Linux / Manjaro / EndeavourOS](#arch-linux--manjaro--endeavouros)
   - [AliveOS (Pre-built Binary Repository)](#aliveos-pre-built-binary-repository)
@@ -28,7 +27,6 @@ This repository provides enhanced, production-ready packaging for **Arch Linux /
   - [Basic Invocation](#basic-invocation)
   - [Session Manager (`muse sessions`)](#session-manager-muse-sessions)
   - [MCP Server Management (`muse mcp`)](#mcp-server-management-muse-mcp)
-  - [Session Import (`muse import`)](#session-import-muse-import)
   - [Authentication & Provider Configuration](#authentication--provider-configuration)
 - [🔧 Architecture & Implementation](#-architecture--implementation)
 - [❓ Troubleshooting & FAQ](#-troubleshooting--faq)
@@ -80,11 +78,6 @@ Connect your external Model Context Protocol (MCP) servers effortlessly:
   * **Antigravity CLI** (`~/.gemini/config/mcp_config.json`)
 * **Full CRUD Management**: List, add, enable, disable, and remove MCP servers stored in the `mcp_servers` block of `~/.config/muse/settings.json` (official docs key; a `mcpServers` alias is merged on write, and `"schema_version": 1` is ensured).
 
-### 5. Foreign Session Importer (`muse import`)
-Bring conversations from other agents into Muse Code as native, resumable sessions:
-* **Sources**: omp (`~/.omp/agent/sessions`), Antigravity (`~/.gemini/.../brain` transcripts + summaries db), OpenCode (`session_v2`/`session` tables in `opencode.db`). Auto-detected by id/path; `--from` forces a source.
-* **Provenance-safe**: user prompts and assistant text convert verbatim; tool calls/results stay plain text (never synthesized tool payloads); foreign system prompts, credentials and opaque reasoning are dropped with counts.
-* **Verify-first workflow**: every import previews with `--dry-run`, and the result validates clean under `muse export` / `muse trace inspect` (zero gaps, zero unknown payloads).
 ---
 
 ## 📥 Installation
@@ -223,22 +216,6 @@ muse mcp remove fetch
 muse mcp check
 ```
 
-### Session Import (`muse import`)
-
-Bring foreign agent sessions into Muse Code as native sessions:
-
-```bash
-# Browse everything importable (omp + agy + opencode)
-muse import list
-muse import list --source agy
-
-# Preview the conversion (no writes)
-muse import import --from opencode ses_e8149341e --dry-run
-
-# Import, then resume natively
-muse import import 034e3ebd-cae9
-muse resume <NEW-UUID>
-```
 
 ### Authentication & Provider Configuration
 

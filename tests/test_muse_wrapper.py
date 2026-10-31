@@ -156,20 +156,6 @@ class WrapperTest(unittest.TestCase):
         os.chmod(helper, 0o755)
         return log
 
-    def test_import_dispatches_all_forms_to_helper(self):
-        """muse import always reaches muse-import (no native verb exists)."""
-        log = self.make_fake_helper("import")
-        for argv in (["import"], ["import", "list"],
-                     ["import", "import", "some-id", "--dry-run"],
-                     ["import", "--from", "agy", "some-id"],
-                     ["import", "some-id"]):
-            if os.path.exists(log):
-                os.remove(log)
-            proc = self.run_wrapper(argv)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertTrue(os.path.exists(log), argv)
-        self.assertFalse(os.path.exists(self.native_log))
-
     def test_stats_flag_first_form_reaches_helper(self):
         """muse stats --since X must not fall through (whitelisted flags)."""
         log = self.make_fake_helper("stats")
